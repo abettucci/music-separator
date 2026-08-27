@@ -20,7 +20,11 @@ image = (
         "yt-dlp",
         "spotdl",
         "demucs",
+        "fastapi[standard]",
     )
+    # Modal 1.x requires local modules used by a remote function to be added
+    # explicitly; otherwise they are not present in the container.
+    .add_local_python_source("downloader", "separator")
 )
 
 
@@ -36,12 +40,28 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
     import tempfile
     import shutil
     import logging
+    import asyncio
     from telegram import Bot
     from downloader import download_audio
     from separator import separate
 
     logging.basicConfig(level=logging.INFO)
-    bot = Bot(token=os.environ["TELEGRAM_BOT_TOKEN"])
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+
+    async def send_message(text: str) -> None:
+        async with Bot(token=token) as bot:
+            await bot.send_message(chat_id=chat_id, text=text)
+
+    async def send_document(result_path: str) -> None:
+        async with Bot(token=token) as bot:
+            with open(result_path, "rb") as file:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=file,
+                    filename=os.path.basename(result_path),
+                    caption=f"🎵 *{stem.capitalize()}* stem — Demucs htdemucs",
+                    parse_mode="Markdown",
+                )
 
     work_dir = tempfile.mkdtemp()
     try:
@@ -50,23 +70,19 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
 
         result_size_mb = os.path.getsize(result_path) / (1024 * 1024)
         if result_size_mb > 49:
-            bot.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ File is {result_size_mb:.1f} MB — exceeds Telegram's 50 MB limit. Try a shorter song.",
+            asyncio.run(
+                send_message(
+                    f"⚠️ File is {result_size_mb:.1f} MB — exceeds Telegram's 50 MB limit. Try a shorter song."
+                )
             )
             return
 
-        with open(result_path, "rb") as f:
-            bot.send_document(
-                chat_id=chat_id,
-                document=f,
-                filename=os.path.basename(result_path),
-                caption=f"🎵 *{stem.capitalize()}* stem — Demucs htdemucs",
-                parse_mode="Markdown",
-            )
-    except Exception as e:
-        logging.exception("Processing failed")
-        bot.send_message(chat_id=chat_id, text=f"❌ Failed: {e}")
+        asyncio.run(send_document(result_path))
+    except Exception as exc:
+        logging.error("Processing failed: %s", type(exc).__name__)
+        asyncio.run(
+            send_message("❌ Couldn't process that song. Please try another link.")
+        )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -77,7 +93,7 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
     image=image,
     secrets=[modal.Secret.from_name("telegram-stem-bot")],
 )
-@modal.web_endpoint(method="POST")
+@modal.fastapi_endpoint(method="POST")
 def webhook(body: dict) -> dict:
     """Telegram sends updates here. Responds instantly; processing runs async."""
     import os

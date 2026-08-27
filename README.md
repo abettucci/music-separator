@@ -20,9 +20,9 @@ modal secret create telegram-stem-bot TELEGRAM_BOT_TOKEN=<your_token>
 
 ### 4. Deploy
 ```bash
-pip install -r requirements.txt
 modal deploy modal_app.py
 ```
+No need to `pip install -r requirements.txt` locally — Modal builds its own container image (see the `image = modal.Image...` block in `modal_app.py`) with `demucs`, `torch`, `spotdl`, etc. installed *inside the cloud container*, not on your machine. Installing them locally only makes sense if you plan to run `bot.py` for local testing (see below), and even then it should go in a virtual environment, not your global/pyenv interpreter — those packages (`torch`, `demucs`) can downgrade shared dependencies (`anyio`, `httpx`, `starlette`, `uvicorn`) that other CLI tools rely on.
 
 Modal will print a webhook URL like:
 ```
@@ -36,10 +36,12 @@ curl "https://api.telegram.org/bot<YOUR_TOKEN>/setWebhook?url=https://your-works
 
 ## Local testing (CPU, slower)
 
-For quick tests without deploying:
+For quick tests without deploying, use an isolated virtual environment — do not install into your global/system Python, since `torch`/`demucs` can conflict with other tools' dependencies:
 ```bash
-cp .env.example .env   # fill in your token
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env   # fill in your token
 python bot.py          # runs with long-polling, no webhook needed
 ```
 

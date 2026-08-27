@@ -12,6 +12,38 @@ import modal
 
 app = modal.App("telegram-stem-bot")
 
+
+def configure_safe_logging() -> None:
+    """Prevent credentials from reaching Modal's container logs."""
+    import logging
+    import re
+
+    class TelegramTokenFilter(logging.Filter):
+        _token_pattern = re.compile(r"(bot\d{6,}:)[A-Za-z0-9_-]+")
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            message = record.getMessage()
+            redacted = self._token_pattern.sub(r"\1[REDACTED]", message)
+            if redacted != message:
+                record.msg = redacted
+                record.args = ()
+            return True
+
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        logging.basicConfig(level=logging.INFO)
+
+    for handler in root_logger.handlers:
+        if not getattr(handler, "_telegram_token_filter_installed", False):
+            handler.addFilter(TelegramTokenFilter())
+            handler._telegram_token_filter_installed = True
+
+    # httpx logs full request URLs at INFO level. Telegram embeds the bot token
+    # in its Bot API URL, so these logs must remain disabled.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("ffmpeg")
@@ -41,11 +73,12 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
     import shutil
     import logging
     import asyncio
+    import subprocess
     from telegram import Bot
     from downloader import download_audio
     from separator import separate
 
-    logging.basicConfig(level=logging.INFO)
+    configure_safe_logging()
     token = os.environ["TELEGRAM_BOT_TOKEN"]
 
     async def send_message(text: str) -> None:
@@ -64,8 +97,10 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
                 )
 
     work_dir = tempfile.mkdtemp()
+    stage = "download"
     try:
         audio_path = download_audio(url, work_dir)
+        stage = "separation"
         result_path = separate(audio_path, stem, work_dir)
 
         result_size_mb = os.path.getsize(result_path) / (1024 * 1024)
@@ -78,6 +113,17 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
             return
 
         asyncio.run(send_document(result_path))
+    except subprocess.CalledProcessError as exc:
+        logging.error(
+            "Processing failed at stage=%s exit_code=%s", stage, exc.returncode
+        )
+        asyncio.run(
+            send_message(
+                "❌ I couldn't download that song. Please try another link."
+                if stage == "download"
+                else "❌ I couldn't separate that audio. Please try another song."
+            )
+        )
     except Exception as exc:
         logging.error("Processing failed: %s", type(exc).__name__)
         asyncio.run(
@@ -101,6 +147,7 @@ def webhook(body: dict) -> dict:
     from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.ext import Application
 
+    configure_safe_logging()
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     bot = Bot(token=token)
 

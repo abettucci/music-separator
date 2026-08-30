@@ -24,7 +24,7 @@ def is_spotify_url(url: str) -> bool:
 
 
 def download_audio(url: str, output_dir: str) -> str:
-    """Download audio from YouTube or Spotify URL. Returns path to downloaded WAV file."""
+    """Download audio from a YouTube or Spotify URL and return its local path."""
     _validate_source_url(url)
     if is_youtube_url(url):
         return _download_youtube(url, output_dir)
@@ -95,36 +95,28 @@ def _download_youtube(url: str, output_dir: str) -> str:
 
 
 def _download_spotify(url: str, output_dir: str) -> str:
-    # spotdl downloads as MP3 by default; Demucs accepts MP3 directly
+    # Demucs accepts MP3 directly. This spotdl version does not support WAV output.
     result = subprocess.run(
         [
             "spotdl",
             "download",
             url,
             "--output", os.path.join(output_dir, "{track-id}.{output-ext}"),
-            "--format", "wav",
+            "--format", "mp3",
         ],
         capture_output=True,
         text=True,
         check=True,
         cwd=output_dir,
     )
-    # spotdl doesn't print the output path — find the newest WAV in output_dir
-    wav_files = sorted(
-        Path(output_dir).glob("*.wav"),
+    # spotdl doesn't print the output path — find the generated MP3.
+    mp3_files = sorted(
+        Path(output_dir).glob("*.mp3"),
         key=lambda f: f.stat().st_mtime,
         reverse=True,
     )
-    if not wav_files:
-        # fallback: accept MP3 too
-        mp3_files = sorted(
-            Path(output_dir).glob("*.mp3"),
-            key=lambda f: f.stat().st_mtime,
-            reverse=True,
+    if not mp3_files:
+        raise FileNotFoundError(
+            f"spotdl did not produce an MP3 file in {output_dir}.\nOutput: {result.stdout}\n{result.stderr}"
         )
-        if not mp3_files:
-            raise FileNotFoundError(
-                f"spotdl did not produce any audio file in {output_dir}.\nOutput: {result.stdout}\n{result.stderr}"
-            )
-        return str(mp3_files[0])
-    return str(wav_files[0])
+    return str(mp3_files[0])

@@ -1,26 +1,74 @@
 import subprocess
-import tempfile
 import os
-import re
 from pathlib import Path
+from urllib.parse import urlparse
+
+
+MAX_URL_LENGTH = 2_048
+YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+}
+SPOTIFY_HOSTS = {"open.spotify.com"}
 
 
 def is_youtube_url(url: str) -> bool:
-    return bool(re.search(r"(youtube\.com|youtu\.be)", url))
+    return _url_host(url) in YOUTUBE_HOSTS
 
 
 def is_spotify_url(url: str) -> bool:
-    return "open.spotify.com" in url
+    return _url_host(url) in SPOTIFY_HOSTS
 
 
 def download_audio(url: str, output_dir: str) -> str:
     """Download audio from YouTube or Spotify URL. Returns path to downloaded WAV file."""
+    _validate_source_url(url)
     if is_youtube_url(url):
         return _download_youtube(url, output_dir)
-    elif is_spotify_url(url):
+    if is_spotify_url(url):
         return _download_spotify(url, output_dir)
-    else:
-        raise ValueError(f"Unsupported URL: {url}. Only YouTube and Spotify links are supported.")
+    raise ValueError("Only YouTube and Spotify track links are supported.")
+
+
+def _url_host(url: str) -> str | None:
+    if not isinstance(url, str):
+        return None
+    try:
+        return urlparse(url).hostname
+    except ValueError:
+        return None
+
+
+def _validate_source_url(url: str) -> None:
+    """Allow only supported HTTPS media URLs before handing them to download tools."""
+    if not isinstance(url, str) or not url or len(url) > MAX_URL_LENGTH:
+        raise ValueError("The link is invalid or too long.")
+
+    try:
+        parsed = urlparse(url)
+    except ValueError as exc:
+        raise ValueError("The link is invalid.") from exc
+
+    hostname = parsed.hostname.lower() if parsed.hostname else ""
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or parsed.username
+        or parsed.password
+    ):
+        raise ValueError("Send a valid HTTPS YouTube or Spotify link.")
+
+    if hostname in YOUTUBE_HOSTS:
+        return
+
+    spotify_path = parsed.path.strip("/").split("/")
+    if hostname in SPOTIFY_HOSTS and "track" in spotify_path:
+        return
+
+    raise ValueError("Only YouTube videos and Spotify tracks are supported.")
 
 
 def _download_youtube(url: str, output_dir: str) -> str:
@@ -51,8 +99,9 @@ def _download_spotify(url: str, output_dir: str) -> str:
     result = subprocess.run(
         [
             "spotdl",
+            "download",
             url,
-            "--output", output_dir,
+            "--output", os.path.join(output_dir, "{track-id}.{output-ext}"),
             "--format", "wav",
         ],
         capture_output=True,

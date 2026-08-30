@@ -49,7 +49,7 @@ image = (
     .apt_install("ffmpeg")
     .pip_install(
         "python-telegram-bot==20.*",
-        "yt-dlp",
+        "yt-dlp[default,curl-cffi]",
         "spotdl",
         "demucs",
         "fastapi[standard]",
@@ -74,6 +74,7 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
     import logging
     import asyncio
     import subprocess
+    import re
     from telegram import Bot
     from downloader import download_audio
     from separator import separate
@@ -97,7 +98,15 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
                 )
 
     work_dir = tempfile.mkdtemp()
-    stage = "download"
+    stage = "spotify_download" if "open.spotify.com" in url else "youtube_download"
+
+    def safe_process_detail(exc: subprocess.CalledProcessError) -> str:
+        """Keep CLI diagnostics useful without persisting links or credentials."""
+        detail = exc.stderr or exc.stdout or "no diagnostic output"
+        detail = re.sub(r"https?://\S+", "[REDACTED_URL]", detail)
+        detail = re.sub(r"bot\d{6,}:[A-Za-z0-9_-]+", "[REDACTED_TOKEN]", detail)
+        return " ".join(detail.split())[:500]
+
     try:
         audio_path = download_audio(url, work_dir)
         stage = "separation"
@@ -115,12 +124,15 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
         asyncio.run(send_document(result_path))
     except subprocess.CalledProcessError as exc:
         logging.error(
-            "Processing failed at stage=%s exit_code=%s", stage, exc.returncode
+            "Processing failed at stage=%s exit_code=%s detail=%s",
+            stage,
+            exc.returncode,
+            safe_process_detail(exc),
         )
         asyncio.run(
             send_message(
                 "❌ I couldn't download that song. Please try another link."
-                if stage == "download"
+                if stage.endswith("_download")
                 else "❌ I couldn't separate that audio. Please try another song."
             )
         )

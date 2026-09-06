@@ -13,6 +13,8 @@ YOUTUBE_HOSTS = {
     "youtu.be",
 }
 SPOTIFY_HOSTS = {"open.spotify.com"}
+DOWNLOAD_TIMEOUT_SECONDS = 180
+SPOTIFY_AUDIO_PROVIDERS = ("youtube-music", "youtube")
 
 
 def is_youtube_url(url: str) -> bool:
@@ -87,6 +89,7 @@ def _download_youtube(url: str, output_dir: str) -> str:
         capture_output=True,
         text=True,
         check=True,
+        timeout=DOWNLOAD_TIMEOUT_SECONDS,
     )
     filepath = result.stdout.strip().splitlines()[-1]
     if not os.path.exists(filepath):
@@ -96,18 +99,32 @@ def _download_youtube(url: str, output_dir: str) -> str:
 
 def _download_spotify(url: str, output_dir: str) -> str:
     # Demucs accepts MP3 directly. This spotdl version does not support WAV output.
+    command = [
+        "spotdl",
+        "download",
+        url,
+        "--output", os.path.join(output_dir, "{track-id}.{output-ext}"),
+        "--format", "mp3",
+        "--audio", *SPOTIFY_AUDIO_PROVIDERS,
+        "--max-retries", "0",
+        "--no-cache",
+        "--print-errors",
+    ]
+    client_id = os.getenv("SPOTIFY_CLIENT_ID")
+    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+    if client_id and client_secret:
+        command.extend([
+            "--client-id", client_id,
+            "--client-secret", client_secret,
+        ])
+
     result = subprocess.run(
-        [
-            "spotdl",
-            "download",
-            url,
-            "--output", os.path.join(output_dir, "{track-id}.{output-ext}"),
-            "--format", "mp3",
-        ],
+        command,
         capture_output=True,
         text=True,
         check=True,
         cwd=output_dir,
+        timeout=DOWNLOAD_TIMEOUT_SECONDS,
     )
     # spotdl doesn't print the output path — find the generated MP3.
     mp3_files = sorted(

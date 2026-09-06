@@ -32,6 +32,7 @@ def configure_safe_logging() -> None:
     root_logger = logging.getLogger()
     if not root_logger.handlers:
         logging.basicConfig(level=logging.INFO)
+    root_logger.setLevel(logging.INFO)
 
     for handler in root_logger.handlers:
         if not getattr(handler, "_telegram_token_filter_installed", False):
@@ -50,7 +51,7 @@ image = (
     .pip_install(
         "python-telegram-bot==20.*",
         "yt-dlp[default,curl-cffi]",
-        "spotdl",
+        "spotdl==4.4.3",
         "demucs",
         "fastapi[standard]",
     )
@@ -100,17 +101,37 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
     work_dir = tempfile.mkdtemp()
     stage = "spotify_download" if "open.spotify.com" in url else "youtube_download"
 
-    def safe_process_detail(exc: subprocess.CalledProcessError) -> str:
+    def safe_process_detail(exc: Exception) -> str:
         """Keep CLI diagnostics useful without persisting links or credentials."""
-        detail = exc.stderr or exc.stdout or "no diagnostic output"
+        detail = (
+            getattr(exc, "stderr", None)
+            or getattr(exc, "stdout", None)
+            or getattr(exc, "output", None)
+            or str(exc)
+            or "no diagnostic output"
+        )
+        if isinstance(detail, bytes):
+            detail = detail.decode(errors="replace")
         detail = re.sub(r"https?://\S+", "[REDACTED_URL]", detail)
         detail = re.sub(r"bot\d{6,}:[A-Za-z0-9_-]+", "[REDACTED_TOKEN]", detail)
-        return " ".join(detail.split())[:500]
+        normalized = " ".join(detail.split())
+        # CLI tracebacks put the actionable exception at the end, not the beginning.
+        return normalized[-500:]
+
+    def download_error_message(detail: str) -> str:
+        if "rate/request limit" in detail.lower():
+            return "❌ Spotify is temporarily rate-limited. Try a YouTube link or try again later."
+        return "❌ I couldn't download that song. Please try another link."
 
     try:
+        logging.info("Song processing started source=%s stem=%s", stage, stem)
+        logging.info("Audio download started source=%s", stage)
         audio_path = download_audio(url, work_dir)
+        logging.info("Audio download completed source=%s", stage)
         stage = "separation"
+        logging.info("Stem separation started stem=%s", stem)
         result_path = separate(audio_path, stem, work_dir)
+        logging.info("Stem separation completed stem=%s", stem)
 
         result_size_mb = os.path.getsize(result_path) / (1024 * 1024)
         if result_size_mb > 49:
@@ -122,22 +143,51 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
             return
 
         asyncio.run(send_document(result_path))
+        logging.info("Song processing completed stem=%s", stem)
     except subprocess.CalledProcessError as exc:
+        detail = safe_process_detail(exc)
         logging.error(
             "Processing failed at stage=%s exit_code=%s detail=%s",
             stage,
             exc.returncode,
-            safe_process_detail(exc),
+            detail,
         )
         asyncio.run(
             send_message(
-                "❌ I couldn't download that song. Please try another link."
+                download_error_message(detail)
                 if stage.endswith("_download")
                 else "❌ I couldn't separate that audio. Please try another song."
             )
         )
+    except subprocess.TimeoutExpired as exc:
+        logging.error(
+            "Processing timed out at stage=%s detail=%s",
+            stage,
+            safe_process_detail(exc),
+        )
+        asyncio.run(
+            send_message(
+                "❌ The download took too long. Please try another song."
+                if stage.endswith("_download")
+                else "❌ The separation took too long. Please try a shorter song."
+            )
+        )
+    except FileNotFoundError as exc:
+        logging.error("Processing failed at stage=%s detail=%s", stage, safe_process_detail(exc))
+        asyncio.run(
+            send_message(
+                "❌ The audio download did not produce a file. Please try another link."
+                if stage.endswith("_download")
+                else "❌ The separation output was not found. Please try another song."
+            )
+        )
     except Exception as exc:
-        logging.error("Processing failed: %s", type(exc).__name__)
+        logging.error(
+            "Processing failed at stage=%s error=%s detail=%s",
+            stage,
+            type(exc).__name__,
+            safe_process_detail(exc),
+        )
         asyncio.run(
             send_message("❌ Couldn't process that song. Please try another link.")
         )

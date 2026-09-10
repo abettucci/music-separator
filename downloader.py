@@ -1,5 +1,6 @@
 import subprocess
 import os
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -15,6 +16,24 @@ YOUTUBE_HOSTS = {
 SPOTIFY_HOSTS = {"open.spotify.com"}
 DOWNLOAD_TIMEOUT_SECONDS = 180
 SPOTIFY_AUDIO_PROVIDERS = ("youtube-music", "youtube")
+
+_COOKIES_FILE = None  # sentinel: None = not yet resolved, "" = no cookies configured
+
+
+def _youtube_cookies_file() -> str | None:
+    """Write the YOUTUBE_COOKIES env var (Netscape cookies.txt content) to a temp
+    file yt-dlp can read, so it authenticates instead of hitting YouTube's bot check."""
+    global _COOKIES_FILE
+    if _COOKIES_FILE is None:
+        cookies_content = os.getenv("YOUTUBE_COOKIES", "")
+        if cookies_content:
+            fd, path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookies_")
+            with os.fdopen(fd, "w") as fh:
+                fh.write(cookies_content)
+            _COOKIES_FILE = path
+        else:
+            _COOKIES_FILE = ""
+    return _COOKIES_FILE or None
 
 
 def is_youtube_url(url: str) -> bool:
@@ -75,17 +94,22 @@ def _validate_source_url(url: str) -> None:
 
 def _download_youtube(url: str, output_dir: str) -> str:
     output_template = os.path.join(output_dir, "%(title)s.%(ext)s")
+    command = [
+        "yt-dlp",
+        "-x",
+        "--audio-format", "wav",
+        "--audio-quality", "0",
+        "--no-playlist",
+        "-o", output_template,
+        "--print", "after_move:filepath",
+    ]
+    cookies_file = _youtube_cookies_file()
+    if cookies_file:
+        command.extend(["--cookies", cookies_file])
+    command.append(url)
+
     result = subprocess.run(
-        [
-            "yt-dlp",
-            "-x",
-            "--audio-format", "wav",
-            "--audio-quality", "0",
-            "--no-playlist",
-            "-o", output_template,
-            "--print", "after_move:filepath",
-            url,
-        ],
+        command,
         capture_output=True,
         text=True,
         check=True,
@@ -117,6 +141,9 @@ def _download_spotify(url: str, output_dir: str) -> str:
             "--client-id", client_id,
             "--client-secret", client_secret,
         ])
+    cookies_file = _youtube_cookies_file()
+    if cookies_file:
+        command.extend(["--cookie-file", cookies_file])
 
     result = subprocess.run(
         command,

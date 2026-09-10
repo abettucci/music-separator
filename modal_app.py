@@ -47,11 +47,17 @@ def configure_safe_logging() -> None:
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("ffmpeg")
+    .apt_install("ffmpeg", "curl", "unzip")
+    # yt-dlp needs a JS runtime to solve YouTube's "n challenge" (EJS); Deno is
+    # the recommended one. Installed to /usr/local so it lands on the default PATH.
+    .run_commands("curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh")
     .pip_install(
         "python-telegram-bot==20.*",
-        "yt-dlp[default,curl-cffi]",
+        "yt-dlp[default,curl-cffi]>=2025.9.5",
         "spotdl==4.4.3",
+        # demucs (archived, unmaintained on PyPI) doesn't reliably declare its
+        # own dependencies at install time, so pin them explicitly.
+        "numpy<2",
         "demucs",
         "fastapi[standard]",
     )
@@ -116,7 +122,10 @@ def process_song(url: str, stem: str, chat_id: int) -> None:
         detail = re.sub(r"bot\d{6,}:[A-Za-z0-9_-]+", "[REDACTED_TOKEN]", detail)
         normalized = " ".join(detail.split())
         # CLI tracebacks put the actionable exception at the end, not the beginning.
-        return normalized[-500:]
+        # spotdl repeats a generic "AudioProviderError" summary per audio provider
+        # it tries, so a short tail only captures that repeated boilerplate —
+        # keep a longer window so the real underlying yt-dlp error survives too.
+        return normalized[-2000:]
 
     def download_error_message(detail: str) -> str:
         if "rate/request limit" in detail.lower():

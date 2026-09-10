@@ -7,3 +7,5 @@ separated/
 *.zip
 .venv/
 venv/
+.playwright-youtube-profile/
+youtube_cookies.txt
